@@ -2,3 +2,4 @@
 venv
 config.yaml
 *pycache*
+.pytest_cache
