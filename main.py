@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default=config['openai_api_key'])
     openai_model: str = Field(default=config['openai_model'])
 
-    class Config:
+    class ConfigDict:
         env_file = ".env"
         env_file_encoding = "utf-8"
 
