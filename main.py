@@ -1,79 +1,82 @@
+import logging
 from abc import ABC, abstractmethod
-from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
+from pydantic import BaseModel, Field
 from openai import OpenAI
 import os
-from pprint import pprint
 import json
+from typing import Literal, Union
+import yaml
+import unittest
 
-# Load environment variables from .env file
-load_dotenv()
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Load configuration
+def load_config(config_path: str = 'config.yaml') -> dict:
+    with open(config_path, 'r') as file:
+        return yaml.safe_load(file)
+
+config = load_config()
 
 class Settings(BaseSettings):
-    openai_api_key: str = os.getenv("openai_api_key")
-    openai_model: str = os.getenv("openai_model", "gpt-3.5-turbo")
+    openai_api_key: str = Field(default=config['openai_api_key'])
+    openai_model: str = Field(default=config['openai_model'])
 
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
 
-    def __str__(self):
-        return f"Settings(openai_api_key={'*' * 8}, openai_model='{self.openai_model}')"
-
 settings = Settings()
 client = OpenAI(api_key=settings.openai_api_key)
 
-def print_debug(label, obj):
-    print(f"\n{'=' * 40}")
-    print(f"{label}:")
-    print(f"{'=' * 40}")
-    pprint(obj, width=80, depth=None, compact=False)
-    print(f"{'=' * 40}\n")
-
-# Command interface
 class MathOperation(ABC):
     @abstractmethod
-    def execute(self, a, b):
+    def execute(self, a: float, b: float) -> float:
         pass
 
     @abstractmethod
-    def get_name(self):
+    def get_name(self) -> str:
         pass
 
-# Concrete command classes
 class AddOperation(MathOperation):
-    def execute(self, a, b):
+    def execute(self, a: float, b: float) -> float:
         return a + b
 
-    def get_name(self):
+    def get_name(self) -> str:
         return "Addition"
 
 class SubtractOperation(MathOperation):
-    def execute(self, a, b):
+    def execute(self, a: float, b: float) -> float:
         return a - b
 
-    def get_name(self):
+    def get_name(self) -> str:
         return "Subtraction"
 
 class MultiplyOperation(MathOperation):
-    def execute(self, a, b):
+    def execute(self, a: float, b: float) -> float:
         return a * b
 
-    def get_name(self):
+    def get_name(self) -> str:
         return "Multiplication"
 
 class DivideOperation(MathOperation):
-    def execute(self, a, b):
+    def execute(self, a: float, b: float) -> float:
         if b == 0:
             raise ValueError("Cannot divide by zero")
         return a / b
 
-    def get_name(self):
+    def get_name(self) -> str:
         return "Division"
 
-# AI operation class
+class AIResponse(BaseModel):
+    operation: Literal["add", "subtract", "multiply", "divide"]
+    num1: float
+    num2: float
+
 class AIOperation(MathOperation):
-    def execute(self, question):
+    def execute(self, question: str) -> float:
         system_message = """
         You are a helpful assistant that responds to math questions. 
         Your response should be in the following JSON format:
@@ -89,25 +92,28 @@ class AIOperation(MathOperation):
             {"role": "user", "content": question}
         ]
 
-        completion = client.chat.completions.create(
-            model=settings.openai_model,
-            messages=messages,
-            response_format={"type": "json_object"}
-        )
+        try:
+            completion = client.chat.completions.create(
+                model=settings.openai_model,
+                messages=messages,
+                response_format={"type": "json_object"}
+            )
 
-        response = json.loads(completion.choices[0].message.content)
-        print_debug("AI Response", response)
-        
-        operation = OPERATIONS.get(response["operation"])
-        if not operation:
-            raise ValueError(f"Invalid operation: {response['operation']}")
-        
-        return operation.execute(response["num1"], response["num2"])
+            response = AIResponse.parse_raw(completion.choices[0].message.content)
+            logger.info(f"AI Response: {response}")
+            
+            operation = OPERATIONS.get(response.operation)
+            if not operation:
+                raise ValueError(f"Invalid operation: {response.operation}")
+            
+            return operation.execute(response.num1, response.num2)
+        except Exception as e:
+            logger.error(f"Error in AI operation: {str(e)}")
+            raise
 
-    def get_name(self):
+    def get_name(self) -> str:
         return "AI-assisted calculation"
 
-# Operation registry
 OPERATIONS = {
     "add": AddOperation(),
     "subtract": SubtractOperation(),
@@ -116,27 +122,41 @@ OPERATIONS = {
     "ai": AIOperation()
 }
 
+class OperationRequest(BaseModel):
+    operation: Literal["add", "subtract", "multiply", "divide", "ai"]
+    num1: Union[float, None] = None
+    num2: Union[float, None] = None
+    question: Union[str, None] = None
+
 class Calculator:
-    def __init__(self, operations):
+    def __init__(self, operations: dict[str, MathOperation]):
         self.operations = operations
 
-    def execute_operation(self, operation_key, *args):
-        operation = self.operations.get(operation_key)
+    def execute_operation(self, request: OperationRequest) -> float:
+        operation = self.operations.get(request.operation)
         if not operation:
-            raise ValueError(f"Invalid operation: {operation_key}")
-        return operation.execute(*args)
+            raise ValueError(f"Invalid operation: {request.operation}")
+        
+        if request.operation == "ai":
+            if request.question is None:
+                raise ValueError("Question is required for AI operation")
+            return operation.execute(request.question)
+        else:
+            if request.num1 is None or request.num2 is None:
+                raise ValueError("Both numbers are required for non-AI operations")
+            return operation.execute(request.num1, request.num2)
 
-    def get_menu_options(self):
+    def get_menu_options(self) -> list[str]:
         return [f"{i+1}. {op.get_name()}" for i, op in enumerate(self.operations.values())]
 
-def main_menu(options):
+def main_menu(options: list[str]) -> str:
     print("\nMath Operations Menu:")
     for option in options:
         print(option)
     print(f"{len(options) + 1}. Exit")
     return input(f"Choose an option (1-{len(options) + 1}): ")
 
-def get_numbers():
+def get_numbers() -> tuple[float, float]:
     num1 = float(input("Enter the first number: "))
     num2 = float(input("Enter the second number: "))
     return num1, num2
@@ -145,12 +165,14 @@ def main():
     calculator = Calculator(OPERATIONS)
     menu_options = calculator.get_menu_options()
 
+    logger.info("Starting the Interactive Math REPL")
     print("Welcome to the Interactive Math REPL!")
     
     while True:
         choice = main_menu(menu_options)
         
         if choice == str(len(menu_options) + 1):
+            logger.info("User chose to exit the application")
             print("Thank you for using the Math REPL. Goodbye!")
             break
         
@@ -159,18 +181,49 @@ def main():
             if 0 <= choice < len(menu_options):
                 operation_key = list(OPERATIONS.keys())[choice]
                 if operation_key == "ai":
-                    user_input = input("Enter your math question: ")
-                    result = calculator.execute_operation(operation_key, user_input)
+                    question = input("Enter your math question: ")
+                    request = OperationRequest(operation=operation_key, question=question)
                 else:
                     num1, num2 = get_numbers()
-                    result = calculator.execute_operation(operation_key, num1, num2)
+                    request = OperationRequest(operation=operation_key, num1=num1, num2=num2)
+                
+                result = calculator.execute_operation(request)
+                logger.info(f"Operation: {operation_key}, Result: {result}")
                 print(f"\nResult: {result}")
             else:
-                raise ValueError
-        except ValueError:
-            print("Invalid option. Please choose a valid number.")
+                raise ValueError("Invalid menu option")
+        except ValueError as e:
+            logger.warning(f"Invalid input: {str(e)}")
+            print(f"Invalid input: {str(e)}")
         except Exception as e:
+            logger.error(f"An error occurred: {str(e)}")
             print(f"An error occurred: {str(e)}")
+
+# Unit tests
+class TestCalculator(unittest.TestCase):
+    def setUp(self):
+        self.calculator = Calculator(OPERATIONS)
+
+    def test_addition(self):
+        request = OperationRequest(operation="add", num1=2, num2=3)
+        self.assertEqual(self.calculator.execute_operation(request), 5)
+
+    def test_subtraction(self):
+        request = OperationRequest(operation="subtract", num1=5, num2=3)
+        self.assertEqual(self.calculator.execute_operation(request), 2)
+
+    def test_multiplication(self):
+        request = OperationRequest(operation="multiply", num1=2, num2=3)
+        self.assertEqual(self.calculator.execute_operation(request), 6)
+
+    def test_division(self):
+        request = OperationRequest(operation="divide", num1=6, num2=3)
+        self.assertEqual(self.calculator.execute_operation(request), 2)
+
+    def test_division_by_zero(self):
+        request = OperationRequest(operation="divide", num1=6, num2=0)
+        with self.assertRaises(ValueError):
+            self.calculator.execute_operation(request)
 
 if __name__ == "__main__":
     main()
